@@ -1,0 +1,22 @@
+# Render Blueprint: one free web service built from the Dockerfile.
+# Free tier sleeps after 15 min idle (~1 min cold start) and has an ephemeral disk.
+services:
+  - type: web
+    name: cocreate
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_PLANNER_MODEL
+        value: gemini-3.8-flash
+      - key: GEMINI_EDIT_RESOLUTION
+        value: 2K
+      - key: PORT
+        value: "8000"
+      - key: AUTH_MODE
+        value: guest
+      - key: COOKIE_SECURE
+        value: "true"

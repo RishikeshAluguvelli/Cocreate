@@ -1,0 +1,25 @@
+# secrets
+.env
+.env.*
+!.env.example
+# python
+backend/.venv/
+__pycache__/
+*.pyc
+# node
+frontend/node_modules/
+frontend/dist/
+backend/app/static/
+# runtime data (uploads, versions)
+data/shoots/
+data/uploads/
+data/demo_cache/
+# misc
+.DS_Store
+*.log
+# local state that must never be published
+data/users.sqlite
+data/eval/
+data/smoke_out/
+data/samples/
+data/*.log

@@ -1,0 +1,14 @@
+.git
+.env
+.env.*
+backend/.venv
+backend/**/__pycache__
+backend/app/static
+frontend/node_modules
+frontend/dist
+data/shoots
+data/demo_cache
+data/samples
+data/smoke_out
+data/uploads
+*.log

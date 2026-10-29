@@ -1,0 +1,22 @@
+@import "tailwindcss";
+
+:root { color-scheme: dark; }
+html, body, #root { height: 100%; }
+body { @apply bg-zinc-950 text-zinc-100 antialiased; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Inter, sans-serif; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 8px; }
+.thin-scroll { scrollbar-width: thin; }
+.card { @apply rounded-xl border border-zinc-800 bg-zinc-900/70; }
+.btn { @apply inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg px-3 py-1.5 text-sm font-medium transition disabled:opacity-40 disabled:cursor-not-allowed; }
+.btn-primary { @apply bg-amber-400 text-zinc-950 hover:bg-amber-300; }
+.btn-ghost { @apply bg-zinc-800 text-zinc-200 hover:bg-zinc-700; }
+.chip { @apply rounded-full border border-zinc-700 bg-zinc-800/80 px-3 py-1 text-xs text-zinc-300 hover:border-amber-400 hover:text-amber-300 transition cursor-pointer; }
+.kbd { @apply rounded border border-zinc-700 bg-zinc-800 px-1 text-[10px] text-zinc-400; }
+.input { @apply w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100 outline-none transition placeholder:text-zinc-600 focus:border-amber-400 focus:ring-2 focus:ring-amber-400/20; }
+.btn-lg { @apply px-4 py-2.5 text-sm; }
+.eyebrow { @apply text-[11px] font-medium uppercase tracking-[0.18em] text-amber-300/90; }
+.card-hover { @apply transition hover:-translate-y-0.5 hover:border-zinc-600 hover:shadow-lg hover:shadow-black/30; }
+.hero-bg { background: radial-gradient(1200px 520px at 15% -10%, rgba(251,191,36,0.10), transparent 60%), radial-gradient(900px 400px at 100% 0%, rgba(56,189,248,0.07), transparent 60%); }
+.nav-link { @apply rounded-md px-2.5 py-1.5 text-sm text-zinc-400 transition hover:bg-zinc-800/80 hover:text-zinc-100; }
+@keyframes fade-up { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.fade-up { animation: fade-up .35s ease-out both; }
