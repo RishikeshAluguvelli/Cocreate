@@ -29,7 +29,7 @@ the request stays byte-for-byte intact, and the UI proves it.
 | ![Recoloured wall with the compare slider](docs/images/colour_result.jpg) | ![Self-contained HTML report](docs/images/report.jpg) |
 | The recolour as a new version, texture and shadows kept | **Report**: every request, edit, QC verdict and before / after, one file to forward |
 
-Docs: [architecture](docs/ARCHITECTURE.md) · [hackathon requirements, judging criteria and demo script](docs/HACKATHON_REPORT.md)
+Docs: [architecture](docs/ARCHITECTURE.md)
 
 ## How it works
 
