@@ -93,8 +93,9 @@ script below (OBS or QuickTime, 1080p, 3 to 5 minutes, narrated). Keep the codeb
 6. **Colour tool and Paint to fix** (75 s). Open **Colour**, click *Reference 1*, click the teal wall: the hex and
    lit / shade variants appear. Switch to *Apply*, click the grey wall: the highlight shows exactly what will change
    (nudge the band or add a second click), Apply: a new version in under a second, Mask view shows the region. Then
-   open Paint, brush the spot the last edit missed, send "also repaint the area I painted": the planner reuses the
-   same colour and the mask shows the painted band included. Then **Report** in a new tab.
+   if the highlight took too much or too little, **Add** or **Erase** with the brush before applying. Then open
+   Paint, brush the spot the last edit missed, send "also repaint the area I painted": the planner reuses the same
+   colour and the mask shows the painted band included. Then **Report** in a new tab.
 7. **Plan first and lot lines** (45 s). Tick *Plan first*, click two points on an aerial, ask for lot lines: the plan
    is described, approve, lines drawn; mention the watermark preset and the download of the whole shoot.
 8. **Close** (30 s). The numbers above, the eval harness, and the accounts layer: "every shoot belongs to a user, two

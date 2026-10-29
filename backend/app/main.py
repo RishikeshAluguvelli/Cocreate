@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import io
 import json
 import os
@@ -9,6 +10,7 @@ import time
 import zipfile
 
 import numpy as np
+from PIL import Image
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
@@ -449,6 +451,9 @@ class RegionIn(PointIn):
     mode: str = "auto"            # auto | surface | object
     points: list[list[float]] | None = None   # several clicks on the same surface: their regions are unioned (x, y is the last one)
     follow_light: bool = False    # extend into parts of the surface that fade into strong light (far end of a floor)
+    # hand corrections drawn in the editor, each a PNG (base64 or data URL) at any resolution where opaque / white =
+    # painted: "add" is unioned with the detected region, "erase" is cut out of it
+    mask_edit: dict | None = None
 
 
 class ApplyColorIn(RegionIn):
@@ -491,6 +496,25 @@ async def color_at(shoot_id: str, photo_id: str, body: PointIn, user: dict | Non
     return r
 
 
+MAX_MASK_PNG_CHARS = 3_000_000
+
+
+def _decode_mask_png(data, size_wh: tuple[int, int], what: str) -> np.ndarray | None:
+    """A PNG drawn in the browser (alpha channel if present, else luminance) -> float mask at the photo's size."""
+    if not data:
+        return None
+    if not isinstance(data, str) or len(data) > MAX_MASK_PNG_CHARS:
+        raise HTTPException(400, f"The {what} drawing is too large.")
+    try:
+        raw = base64.b64decode(data.split(",", 1)[-1], validate=False)
+        im = Image.open(io.BytesIO(raw))
+        chan = im.getchannel("A") if im.mode in ("RGBA", "LA") else im.convert("L")
+        chan = chan.resize(size_wh, Image.BILINEAR)
+        return (np.asarray(chan).astype(np.float32) / 255.0 > 0.5).astype(np.float32)
+    except Exception:
+        raise HTTPException(400, f"The {what} drawing could not be read.")
+
+
 def _region_union(rgb, body: RegionIn):
     pts = [[float(x), float(y)] for x, y in (body.points or [[body.x, body.y]]) if 0 <= x <= 1 and 0 <= y <= 1][:12] or [[body.x, body.y]]
     region, used = None, []
@@ -498,6 +522,17 @@ def _region_union(rgb, body: RegionIn):
         m, u = pick.region_for_apply(rgb, x, y, body.tolerance, body.mode, body.follow_light)
         region = m if region is None else np.maximum(region, m)
         used.append(u)
+    edit = body.mask_edit or {}
+    if edit:
+        H, W = region.shape
+        add = _decode_mask_png(edit.get("add"), (W, H), "added-area")
+        erase = _decode_mask_png(edit.get("erase"), (W, H), "erased-area")
+        if add is not None and add.any():
+            region = np.maximum(region, add)
+            used.append("hand-added")
+        if erase is not None and erase.any():
+            region = region * (1.0 - erase)
+            used.append("hand-erased")
     return region, " + ".join(dict.fromkeys(used)), pts
 
 
@@ -525,7 +560,7 @@ async def apply_color(shoot_id: str, photo_id: str, body: ApplyColorIn, user: di
     region, used, pts = await asyncio.to_thread(_region_union, rgb, body)
     area = float((region > 0.5).mean())
     if area < 0.0005:
-        raise HTTPException(400, "Nothing coherent under that point to recolour. Try the Object mode or a higher tolerance.")
+        raise HTTPException(400, "Nothing left to recolour under that point: the area is empty (or you erased all of it). Click a surface, lower the erase, or widen the band.")
     out = await asyncio.to_thread(pick.apply_color, rgb, region, hex_, body.strength, body.luminance_follow)
     pdir = store.photo_dir(p)
     idx = len(p.versions)
@@ -534,6 +569,7 @@ async def apply_color(shoot_id: str, photo_id: str, body: ApplyColorIn, user: di
     imaging.save_rgb(composite.overlay_preview(rgb, region), pdir / f"v{idx:02d}_maskpreview.jpg")
     store.add_version(s, p, out_path, "recolor",
                       {"hex": hex_, "points": [[round(x, 4), round(y, 4)] for x, y in pts], "mode": used, "tolerance": body.tolerance, "follow_light": body.follow_light,
+                       "hand_edited": bool(body.mask_edit and (body.mask_edit.get("add") or body.mask_edit.get("erase"))),
                        "strength": body.strength, "luminance_follow": body.luminance_follow, "area_pct": round(area * 100, 2)},
                       f"Recoloured the clicked {used} to {hex_}{'' if body.strength >= 1 else f' at {int(body.strength * 100)}%'} ({area * 100:.1f}% of frame)",
                       mask_path=mask_path)

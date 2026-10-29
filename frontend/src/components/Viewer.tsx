@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Brush, Columns2, Diff, Download, Eraser, Layers, Loader2, MapPin, MessageSquareText, Pipette, RefreshCw, ShieldAlert, ShieldCheck, SlidersHorizontal, Undo2, X } from 'lucide-react'
-import type { ColorAt, PaintMask, PickSource, PickedColor, RegionAt, RegionMode } from '../api'
+import { Brush, Columns2, Diff, Download, Eraser, Layers, Loader2, MapPin, MessageSquareText, Palette, Pipette, Plus, RefreshCw, ShieldAlert, ShieldCheck, SlidersHorizontal, Undo2, X } from 'lucide-react'
+import type { ColorAt, MaskEdit, PaintMask, PickSource, PickedColor, RegionAt, RegionMode } from '../api'
 import type { Photo, Version } from '../types'
 import { headOf, TOOL_LABEL } from '../types'
 import { api } from '../api'
@@ -90,6 +90,13 @@ type Props = {
 }
 const PAINT_RES = 1024
 type PickSrc = { source: PickSource; index: number | null }
+type Refine = 'off' | 'add' | 'erase'
+/** Common real-estate paint colours offered as one-click swatches next to the colour wheel and the hex field. */
+const PRESETS: { name: string; hex: string }[] = [
+  { name: 'Pure white', hex: '#F4F4F2' }, { name: 'Warm white', hex: '#F2EDE4' }, { name: 'Light grey', hex: '#D8DBDF' }, { name: 'Greige', hex: '#C8C2B7' },
+  { name: 'Agreeable grey', hex: '#D1CBC1' }, { name: 'Sage', hex: '#B7C4B1' }, { name: 'Sky blue', hex: '#BFD3E0' }, { name: 'Teal', hex: '#2E5B62' },
+  { name: 'Navy', hex: '#2F3A4F' }, { name: 'Charcoal', hex: '#3A3D40' }, { name: 'Terracotta', hex: '#B5603F' }, { name: 'Soft black', hex: '#23262A' },
+]
 
 export default function Viewer({ shootId, photo, points, pointsMode, busy: chatBusy, onPointsMode, onPoints, onPhoto, onSend, paintMode, onPaintMode, paint, onPaint, colorMode, onColorMode, picked, onPicked }: Props) {
   const head = headOf(photo)
@@ -129,8 +136,64 @@ export default function Viewer({ shootId, photo, points, pointsMode, busy: chatB
   const [colorErr, setColorErr] = useState<string | null>(null)
   const [hexDraft, setHexDraft] = useState(picked?.hex ?? '')
   useEffect(() => { setHexDraft(picked?.hex ?? '') }, [picked?.hex])
-  useEffect(() => { setPickInfo(null); setRegion(null); setPickSrc({ source: 'head', index: null }); setColorErr(null) }, [photo.id])
-  useEffect(() => { if (!colorMode) { setRegion(null); setPickInfo(null); setColorErr(null) } }, [colorMode])
+  // refine brush: hand corrections to the highlighted region, kept as two stroke layers (add / erase) that are sent
+  // with Apply; the visible canvas composites the server's region preview with the strokes
+  const [refine, setRefine] = useState<Refine>('off')
+  const [refineBrush, setRefineBrush] = useState(4)
+  const [editArea, setEditArea] = useState<number | null>(null)   // % of frame after hand edits (client estimate)
+  const [hasEdits, setHasEdits] = useState(false)
+  const refineRef = useRef<HTMLCanvasElement>(null)
+  const addC = useRef<HTMLCanvasElement | null>(null)
+  const eraseC = useRef<HTMLCanvasElement | null>(null)
+  const overlayImg = useRef<HTMLImageElement | null>(null)
+  const refining = useRef(false)
+  const lastRefinePt = useRef<[number, number] | null>(null)
+  const refineW = PAINT_RES, refineH = Math.max(1, Math.round(PAINT_RES * photo.height / photo.width))
+  const layer = (ref: React.MutableRefObject<HTMLCanvasElement | null>) => {
+    if (!ref.current || ref.current.width !== refineW || ref.current.height !== refineH) { const c = document.createElement('canvas'); c.width = refineW; c.height = refineH; ref.current = c }
+    return ref.current
+  }
+  const layerHasInk = (c: HTMLCanvasElement) => { const d = c.getContext('2d')!.getImageData(0, 0, c.width, c.height).data; for (let i = 3; i < d.length; i += 4) if (d[i] > 127) return true; return false }
+  const redrawRefine = () => {
+    const c = refineRef.current; if (!c) return
+    const ctx = c.getContext('2d')!; ctx.globalCompositeOperation = 'source-over'; ctx.clearRect(0, 0, c.width, c.height)
+    if (overlayImg.current?.complete && overlayImg.current.naturalWidth) ctx.drawImage(overlayImg.current, 0, 0, c.width, c.height)
+    const a = addC.current, e = eraseC.current
+    if (a) { const t = document.createElement('canvas'); t.width = c.width; t.height = c.height; const tc = t.getContext('2d')!; tc.drawImage(a, 0, 0); tc.globalCompositeOperation = 'source-in'; tc.fillStyle = 'rgba(251,191,36,0.45)'; tc.fillRect(0, 0, t.width, t.height); ctx.drawImage(t, 0, 0) }
+    if (e) { ctx.globalCompositeOperation = 'destination-out'; ctx.drawImage(e, 0, 0); ctx.globalCompositeOperation = 'source-over' }
+    const d = ctx.getImageData(0, 0, c.width, c.height).data; let n = 0; for (let i = 3; i < d.length; i += 4) if (d[i] > 40) n++
+    setEditArea(Math.round(1000 * n / (c.width * c.height)) / 10)
+    setHasEdits(!!(a && layerHasInk(a)) || !!(e && layerHasInk(e)))
+  }
+  useEffect(() => {   // (re)load the server preview whenever the region changes, then composite
+    if (!region) { overlayImg.current = null; setEditArea(null); return }
+    const im = new Image(); im.onload = () => { overlayImg.current = im; redrawRefine() }; im.src = region.preview_url
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [region?.preview_url])
+  const clearRefine = () => { addC.current = null; eraseC.current = null; setHasEdits(false); setRefine('off'); redrawRefine() }
+  const refinePos = (ev: React.PointerEvent): [number, number] | null => {
+    const c = refineRef.current; if (!c) return null
+    const r = c.getBoundingClientRect(); return [((ev.clientX - r.left) / r.width) * c.width, ((ev.clientY - r.top) / r.height) * c.height]
+  }
+  const refineStroke = (from: [number, number], to: [number, number]) => {
+    const target = layer(refine === 'add' ? addC : eraseC), other = layer(refine === 'add' ? eraseC : addC)
+    const w = Math.max(2, (refineBrush / 100) * refineW)
+    for (const [c, op] of [[target, 'source-over'], [other, 'destination-out']] as const) {
+      const ctx = c.getContext('2d')!; ctx.globalCompositeOperation = op; ctx.strokeStyle = '#fff'; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.lineWidth = w
+      ctx.beginPath(); ctx.moveTo(from[0], from[1]); ctx.lineTo(to[0], to[1]); ctx.stroke(); ctx.globalCompositeOperation = 'source-over'
+    }
+    redrawRefine()
+  }
+  const refineDown = (ev: React.PointerEvent) => { if (refine === 'off') return; ev.preventDefault(); ev.stopPropagation(); (ev.target as HTMLElement).setPointerCapture(ev.pointerId); refining.current = true; const p = refinePos(ev); if (p) { lastRefinePt.current = p; refineStroke(p, p) } }
+  const refineMove = (ev: React.PointerEvent) => { if (refine === 'off' || !refining.current) return; const p = refinePos(ev); if (p && lastRefinePt.current) { refineStroke(lastRefinePt.current, p); lastRefinePt.current = p } }
+  const refineUp = () => { refining.current = false; lastRefinePt.current = null }
+  const maskEdit = (): MaskEdit | null => {
+    const a = addC.current && layerHasInk(addC.current) ? addC.current.toDataURL('image/png') : null
+    const e = eraseC.current && layerHasInk(eraseC.current) ? eraseC.current.toDataURL('image/png') : null
+    return a || e ? { add: a, erase: e } : null
+  }
+  useEffect(() => { setPickInfo(null); setRegion(null); setPickSrc({ source: 'head', index: null }); setColorErr(null); addC.current = null; eraseC.current = null; setHasEdits(false); setRefine('off') }, [photo.id])
+  useEffect(() => { if (!colorMode) { setRegion(null); setPickInfo(null); setColorErr(null); addC.current = null; eraseC.current = null; setHasEdits(false); setRefine('off') } }, [colorMode])
   // when the band or mode changes, recompute the previewed region for the same click
   useEffect(() => {
     if (!region) return
@@ -251,7 +314,7 @@ export default function Viewer({ shootId, photo, points, pointsMode, busy: chatB
     const p = norm(e); if (!p) return
     const [x, y] = p
     if (colorMode) {
-      if (colorBusy) return
+      if (colorBusy || refine !== 'off') return
       setColorErr(null)
       if (stage === 'pick') {
         setColorBusy('Reading the colour…')
@@ -274,8 +337,8 @@ export default function Viewer({ shootId, photo, points, pointsMode, busy: chatB
     if (!region || !picked) return
     setColorBusy('Recolouring…'); setColorErr(null)
     try {
-      const p = await api.applyColor(shootId, photo.id, { x: region.x, y: region.y, points: region.points, tolerance, mode: regionMode, follow_light: followLight, hex: picked.hex, strength: strength / 100, luminance_follow: lumFollow / 100 })
-      onPhoto(p); setRegion(null)
+      const p = await api.applyColor(shootId, photo.id, { x: region.x, y: region.y, points: region.points, tolerance, mode: regionMode, follow_light: followLight, mask_edit: maskEdit(), hex: picked.hex, strength: strength / 100, luminance_follow: lumFollow / 100 })
+      onPhoto(p); setRegion(null); clearRefine()
     } catch (err) { setColorErr(errText(err)) } finally { setColorBusy(null) }
   }
   const askAssistant = () => {
@@ -387,11 +450,15 @@ export default function Viewer({ shootId, photo, points, pointsMode, busy: chatB
           {pointsMode && <span className="absolute bottom-2 left-2 rounded bg-amber-400 px-2 py-0.5 text-[11px] font-medium text-zinc-950">Click to add points · they are sent with your next message</span>}
           {/* colour tool overlays: the sampled region (green) or the region about to be recoloured (amber) */}
           {pickOverlayVisible && pickInfo && <img src={pickInfo.preview_url} alt="" className="pointer-events-none absolute inset-0 h-full w-full" draggable={false} />}
-          {colorMode && stage === 'apply' && region && <img src={region.preview_url} alt="" className="pointer-events-none absolute inset-0 h-full w-full" draggable={false} data-testid="region-overlay" />}
+          {colorMode && stage === 'apply' && region && (
+            <canvas ref={refineRef} width={refineW} height={refineH} data-testid="region-overlay"
+              onPointerDown={refineDown} onPointerMove={refineMove} onPointerUp={refineUp} onPointerCancel={refineUp}
+              className={`absolute inset-0 h-full w-full ${refine !== 'off' ? 'cursor-crosshair touch-none' : 'pointer-events-none'}`} />
+          )}
           {colorMode && stage === 'apply' && region && region.points.map((pt, i) => <span key={i} className="absolute h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-zinc-950 bg-amber-400" style={{ left: `${pt[0] * 100}%`, top: `${pt[1] * 100}%` }} />)}
           {colorMode && (
             <span className="absolute bottom-2 left-2 flex items-center gap-1.5 rounded bg-amber-400 px-2 py-0.5 text-[11px] font-medium text-zinc-950">
-              {colorBusy ? <><Loader2 size={11} className="animate-spin" /> {colorBusy}</> : stage === 'pick' ? 'Click a wall or object to read its colour' : !picked ? 'Pick or type a colour first, then click a wall or object' : region ? 'Click again to add more of the surface · Apply when the highlight is right' : `Click the wall or object to paint ${picked.hex}`}
+              {colorBusy ? <><Loader2 size={11} className="animate-spin" /> {colorBusy}</> : stage === 'pick' ? 'Click a wall or object to read its colour' : !picked ? 'Pick or type a colour first, then click a wall or object' : refine === 'add' ? 'Brush over anything the highlight missed' : refine === 'erase' ? 'Brush over anything that should not change' : region ? 'Click again to add more of the surface · Apply when the highlight is right' : `Click the wall or object to paint ${picked.hex}`}
             </span>
           )}
           {/* paint overlay: visible whenever a painted area exists for this photo, interactive only in paint mode */}
@@ -485,6 +552,20 @@ export default function Viewer({ shootId, photo, points, pointsMode, busy: chatB
                     </div>
                   </div>
                 )}
+                <div className="rounded-lg border border-zinc-800 p-2" data-testid="any-colour">
+                  <div className="mb-1.5 flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-zinc-500"><Palette size={11} /> Or choose any colour</div>
+                  <div className="flex items-center gap-2">
+                    <label className="btn btn-ghost relative !px-2 !py-1.5 text-[11px]" title="Open the colour wheel"><Palette size={13} /> Colour wheel
+                      <input type="color" value={HEX_RE.test(hexDraft) ? hexDraft : '#808080'} onChange={e => setHex(e.target.value.toUpperCase())} className="absolute inset-0 h-full w-full cursor-pointer opacity-0" aria-label="Colour wheel" /></label>
+                    <input value={hexDraft} onChange={e => setHex(e.target.value.startsWith('#') ? e.target.value : '#' + e.target.value)} placeholder="#RRGGBB" spellCheck={false} aria-label="Hex colour"
+                      className={`input !py-1.5 font-mono text-xs ${hexDraft && !HEX_RE.test(hexDraft) ? '!border-red-500/60' : ''}`} data-testid="hex-input-pick" />
+                  </div>
+                  <div className="mt-2 grid grid-cols-6 gap-1">
+                    {PRESETS.map(c => <button key={c.hex} title={`${c.name} ${c.hex}`} aria-label={c.name} onClick={() => { setHexDraft(c.hex); onPicked({ hex: c.hex, from: `preset · ${c.name}` }) }}
+                      className={`h-6 rounded border ${picked?.hex === c.hex ? 'border-amber-400 ring-1 ring-amber-400/60' : 'border-zinc-700 hover:border-zinc-500'}`} style={{ background: c.hex }} />)}
+                  </div>
+                  {hexDraft && !HEX_RE.test(hexDraft) && <div className="mt-1 text-[10px] text-red-300">Use six hex digits, like #3A5F6B.</div>}
+                </div>
                 <button className="btn btn-primary w-full justify-center !py-1.5" disabled={!picked} onClick={() => setStage('apply')}>Next: apply it →</button>
               </div>
             )}
@@ -508,7 +589,22 @@ export default function Viewer({ shootId, photo, points, pointsMode, busy: chatB
                   <input type="range" min={10} max={100} value={strength} onChange={e => setStrength(Number(e.target.value))} className="w-full accent-amber-400" /></label>
                 <label className="block"><span className="flex justify-between text-zinc-400"><span>Follow colour brightness</span><span>{lumFollow}%</span></span>
                   <input type="range" min={0} max={100} value={lumFollow} onChange={e => setLumFollow(Number(e.target.value))} className="w-full accent-amber-400" /></label>
-                {region && <div className="flex items-center justify-between text-[11px] text-amber-200"><span>{region.area_pct}% of the frame selected · {region.mode_used}{region.points.length > 1 ? ` · ${region.points.length} clicks` : ''}</span><button className="text-zinc-400 hover:text-zinc-200" onClick={() => setRegion(null)}>Clear</button></div>}
+                {region && <div className="flex items-center justify-between text-[11px] text-amber-200"><span>{hasEdits && editArea != null ? `${editArea}% of the frame after your edits` : `${region.area_pct}% of the frame selected`} · {region.mode_used}{region.points.length > 1 ? ` · ${region.points.length} clicks` : ''}</span><button className="text-zinc-400 hover:text-zinc-200" onClick={() => { setRegion(null); clearRefine() }}>Clear</button></div>}
+                {region && (
+                  <div className="rounded-lg border border-zinc-800 p-2" data-testid="refine">
+                    <div className="mb-1.5 flex items-center justify-between text-[10px] uppercase tracking-wide text-zinc-500"><span className="flex items-center gap-1.5"><Brush size={11} /> Adjust the area by hand</span>{hasEdits && <span className="normal-case tracking-normal text-amber-200">edited</span>}</div>
+                    <div className="grid grid-cols-2 gap-1.5">
+                      <button className={`btn btn-ghost justify-center !py-1.5 ${refine === 'add' ? 'ring-1 ring-amber-400/60' : ''}`} onClick={() => setRefine(r => r === 'add' ? 'off' : 'add')} data-testid="refine-add"><Plus size={13} /> Add</button>
+                      <button className={`btn btn-ghost justify-center !py-1.5 ${refine === 'erase' ? 'ring-1 ring-amber-400/60' : ''}`} onClick={() => setRefine(r => r === 'erase' ? 'off' : 'erase')} data-testid="refine-erase"><Eraser size={13} /> Erase</button>
+                    </div>
+                    {refine !== 'off' && <label className="mt-2 block"><span className="flex justify-between text-zinc-400"><span>Brush size</span><span>{refineBrush}%</span></span>
+                      <input type="range" min={1} max={15} value={refineBrush} onChange={e => setRefineBrush(Number(e.target.value))} className="w-full accent-amber-400" /></label>}
+                    <div className="mt-1.5 flex items-center justify-between text-[10px] text-zinc-500">
+                      <span>{refine === 'off' ? 'Brush over the photo to add or remove parts of the highlight.' : refine === 'add' ? 'Painting adds to the area.' : 'Painting removes from the area.'}</span>
+                      {hasEdits && <button className="text-zinc-400 hover:text-zinc-200" onClick={clearRefine} data-testid="refine-clear">Undo edits</button>}
+                    </div>
+                  </div>
+                )}
                 <button className="btn btn-primary w-full justify-center" disabled={!region || !picked || !!colorBusy} onClick={applyColor} data-testid="apply-color">
                   {colorBusy ? <Loader2 size={14} className="animate-spin" /> : <>Apply {picked?.hex ?? 'colour'} as v{photo.versions.length}</>}
                 </button>

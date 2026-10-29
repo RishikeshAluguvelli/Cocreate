@@ -41,7 +41,7 @@ export const api = {
   // colour tool (eyedropper + one-click recolour): deterministic, no planner, sub-second
   colorAt: (sid: string, pid: string, body: PointBody) => j<ColorAt>(`/api/shoots/${sid}/photos/${pid}/color-at`, json(body)),
   regionAt: (sid: string, pid: string, body: PointBody & { mode: RegionMode; points?: number[][]; follow_light?: boolean }) => j<RegionAt>(`/api/shoots/${sid}/photos/${pid}/region-at`, json(body)),
-  applyColor: (sid: string, pid: string, body: PointBody & { mode: RegionMode; points?: number[][]; follow_light?: boolean; hex: string; strength: number; luminance_follow: number }) => j<Photo>(`/api/shoots/${sid}/photos/${pid}/apply-color`, json(body)),
+  applyColor: (sid: string, pid: string, body: PointBody & { mode: RegionMode; points?: number[][]; follow_light?: boolean; mask_edit?: MaskEdit | null; hex: string; strength: number; luminance_follow: number }) => j<Photo>(`/api/shoots/${sid}/photos/${pid}/apply-color`, json(body)),
 }
 
 export type PickSource = 'head' | 'original' | 'bracket' | 'reference'
@@ -49,6 +49,7 @@ export type RegionMode = 'auto' | 'surface' | 'object'
 export type PointBody = { x: number; y: number; source?: PickSource; index?: number | null; tolerance?: number }
 export type ColorAt = { hex: string; hex_at_click: string; hex_light: string; hex_shade: string; lab: number[]; pixels: number; area_pct: number; region_mode: string; box: number[] | null; photo: string; sampled_from: string; source: PickSource; index: number | null; preview_url: string }
 export type RegionAt = { area_pct: number; mode_used: string; box: number[] | null; preview_url: string }
+export type MaskEdit = { add: string | null; erase: string | null }   // PNG data URLs drawn in the editor: opaque = painted
 export type PickedColor = { hex: string; from: string }
 export type PaintMask = { photo_id: string; png: string; area: number }
 export type ChatBody = { text: string; selected_photo_id?: string | null; points?: number[][] | null; mask?: PaintMask | null; picked_color?: PickedColor | null; scope: 'shoot' | 'photo'; confirm_first: boolean }

@@ -66,11 +66,13 @@ artifacts; the planner retries flagged photos once and the UI shows the verdict.
   their account, shoot count and a "continue last shoot" button; then how-it-works, upload, demo shoots with the
   customer's real request on each card, and a "what you can ask for" overview.
 - **Colour tool** in the editor: pick a colour from any wall or object of the current photo, its original, a bracket
-  or a customer reference (lit / surface / spot / shade variants, or type a hex), then click the wall or object to
-  recolour; the highlighted region updates live with the colour band and Auto / Surface / Object modes, extra clicks
-  add more of the surface, **Follow lighting** extends into the part of a floor or wall that fades into strong light
-  (local-continuity growth, opt-in because near-white neighbours can join), and "Ask the assistant instead" sends the
-  point and colour through the planner with QC.
+  or a customer reference (lit / surface / spot / shade variants), or choose any colour with the colour wheel, a hex
+  field or twelve common paint presets; then click the wall or object to recolour. The highlighted region updates live
+  with the colour band and Auto / Surface / Object modes, extra clicks add more of the surface, **Follow lighting**
+  extends into the part of a floor or wall that fades into strong light (opt-in because near-white neighbours can
+  join), and **Add / Erase brushes** adjust the area by hand before applying (the strokes are unioned with or cut out
+  of the detected region at full resolution). "Ask the assistant instead" sends the point and colour through the
+  planner with QC.
   The picked colour also appears as a chat chip ("Repaint the walls to #4B5E64").
 - **Scope control**: "Whole shoot" (agent decides per photo and reports what it skipped) or "Only Photo N".
 - **Paint** mode: brush over any area, then say what to do there; **Report** exports a self-contained HTML page with every
