@@ -40,6 +40,22 @@ MAX_CHAT_CHARS = 4000
 SECURITY_HEADERS = {"X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY", "Referrer-Policy": "same-origin"}
 
 
+@app.middleware("http")
+async def private_cache(request: Request, call_next):
+    """Everything under /api and /files belongs to one user: mark it private so a CDN in front of the app (Render,
+    Cloudflare) never serves one tenant's photo or JSON to the next visitor from its cache. Browsers may still keep
+    versioned images for an hour; the built frontend assets under /assets stay publicly cacheable."""
+    response = await call_next(request)
+    path = request.url.path
+    if path.startswith("/files/"):
+        response.headers["Cache-Control"] = "private, max-age=3600"
+    elif path.startswith("/api/") and "Cache-Control" not in response.headers:
+        response.headers["Cache-Control"] = "private, no-store"
+    if path.startswith(("/files/", "/api/")):
+        response.headers["Vary"] = "Cookie"
+    return response
+
+
 def _checked_uploads(files: list[UploadFile]) -> None:
     if len(files) > MAX_UPLOAD_FILES:
         raise HTTPException(400, f"At most {MAX_UPLOAD_FILES} photos per upload.")
