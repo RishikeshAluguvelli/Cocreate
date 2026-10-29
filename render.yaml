@@ -20,3 +20,7 @@ services:
         value: guest
       - key: COOKIE_SECURE
         value: "true"
+      - key: EDIT_CONCURRENCY   # one model edit at a time keeps the free 512 MB instance well inside its memory
+        value: "1"
+      - key: PYTHONUNBUFFERED
+        value: "1"

@@ -21,7 +21,7 @@ from ..tools.remove import remove_object
 from ..tools.tv_screen import tv_screen
 
 Emit = Callable[[str, dict], Awaitable[None]]
-_SEM = asyncio.Semaphore(3)
+_SEM = asyncio.Semaphore(max(1, settings.edit_concurrency))   # EDIT_CONCURRENCY
 # the UI payload of the request being served (scope, points, painted mask); set per turn in agent.loop
 CURRENT_UI: contextvars.ContextVar[dict] = contextvars.ContextVar("cocreate_ui", default={})
 

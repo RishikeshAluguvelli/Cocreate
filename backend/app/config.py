@@ -62,6 +62,7 @@ class Settings(BaseSettings):
     small_mask_area: float = 0.03   # <= this fraction of image -> LaMa, else generative fill
     large_mask_area: float = 0.18   # > this fraction -> two fill strategies run and the QC verdict picks the better
     mask_review: bool = True        # vision check of surface masks: carve out parts that are not the target
+    edit_concurrency: int = 3       # model edits running at once per process; 1 on a 512 MB host (each 2K edit peaks ~300 MB)
 
     @property
     def has_planner(self) -> bool:
