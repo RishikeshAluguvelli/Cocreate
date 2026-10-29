@@ -1,3 +1,14 @@
+---
+title: Cocreate
+emoji: 🏠
+colorFrom: yellow
+colorTo: gray
+sdk: docker
+app_port: 8000
+pinned: false
+short_description: Chat editor for real-estate photo shoots with masked, QC-checked tools
+---
+
 # Cocreate — conversational real-estate photo editing
 
 **AutoHDR hackathon · Track 3.** A photographer or agent describes a change in chat; the agent looks at every photo in
