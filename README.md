@@ -1,7 +1,35 @@
-# Cocreate — conversational real-estate photo editing (AutoHDR hackathon, Track 3)
+# Cocreate — conversational real-estate photo editing
 
-A customer describes a change in chat; the agent looks at every photo in the shoot, picks the right tool per photo,
-runs the edits, QC-checks them and shows before/after. Everything outside the request stays byte-for-byte intact.
+**AutoHDR hackathon · Track 3.** A photographer or agent describes a change in chat; the agent looks at every photo in
+the shoot, picks the right tool per photo, runs the edits, QC-checks them and shows before / after. Everything outside
+the request stays byte-for-byte intact, and the UI proves it.
+
+![Remove the garbage bins: compare slider, tool cards and QC verdict](docs/images/editor_removal.jpg)
+
+**Why it stands out**
+
+- **Whole-shoot understanding.** One request, nine photos: the planner edits the ones it applies to and says what it skipped.
+- **Proof, not promises.** The **Mask** view shows the exact region a model was allowed to touch; the **Changes** view
+  paints every pixel that differs in magenta. A vision QC pass scores fulfilled / collateral / artifacts on every AI edit.
+- **Colour done right.** Sample a wall colour from the original brackets or the customer's reference and repaint with texture
+  and shading kept; or use the **Colour tool**: eyedropper on any wall or object, one click to recolour another, under a second.
+- **Fix anything by hand.** Paint a missed spot and say what to do there, nudge sliders that track the chat edit, undo or
+  revert any version, regenerate a flagged edit.
+- **Built to be used tomorrow.** Private guest workspaces with no sign-up, accounts that keep the work, per-shoot request
+  isolation, downloads, and a self-contained HTML report for the customer.
+- **Measured.** 70.5 % strict-judge pass on AutoHDR's 200 real customer requests (up from 42 % at the first version), a
+  per-tool coverage suite, and automated isolation and concurrency checks.
+
+| | |
+|---|---|
+| ![Home page with the guest workspace card](docs/images/home.jpg) | ![Changes view: magenta marks the only pixels that moved](docs/images/changes_view.jpg) |
+| Home page: sign up or log in right in the hero; guests already have a private workspace | **Changes** view after a removal: 2 % of the frame moved, nothing else |
+| ![Mask view: the exact region the model could touch](docs/images/mask_view.jpg) | ![Colour tool: the highlighted wall is what one click will recolour](docs/images/colour_apply.jpg) |
+| **Mask** view: detection → GrabCut → contact shadow, per bin | **Colour tool**: teal picked from the customer reference, the grey wall highlighted before applying |
+| ![Recoloured wall with the compare slider](docs/images/colour_result.jpg) | ![Self-contained HTML report](docs/images/report.jpg) |
+| The recolour as a new version, texture and shadows kept | **Report**: every request, edit, QC verdict and before / after, one file to forward |
+
+Docs: [architecture](docs/ARCHITECTURE.md) · [hackathon requirements, judging criteria and demo script](docs/HACKATHON_REPORT.md)
 
 ## How it works
 
