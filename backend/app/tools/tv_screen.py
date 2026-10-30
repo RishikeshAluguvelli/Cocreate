@@ -9,9 +9,11 @@ import cv2
 import numpy as np
 
 from .. import store
+from ..config import settings
 from ..models import Photo, Shoot
 from ..providers.gemini import gemini_provider
 from . import composite, imaging
+from .qc import qc_check, qc_score
 
 Progress = Callable[[str], Awaitable[None]] | None
 
@@ -132,6 +134,25 @@ def render_screen(rgb: np.ndarray, quad: np.ndarray, content: np.ndarray | None,
     return out, mask
 
 
+async def _qc_closeup(instruction: str, before: np.ndarray, after: np.ndarray, box: list[float], pdir: Path, tag: str) -> dict:
+    """QC on a crop around the TV box (padded, at least ~700 px): on the full frame a misaligned screen is a few pixels
+    and the judge waves it through; on the close-up it is obvious."""
+    H, W = before.shape[:2]
+    x0, y0, x1, y1 = box
+    bw, bh = (x1 - x0) * W, (y1 - y0) * H
+    cx, cy = (x0 + x1) / 2 * W, (y0 + y1) / 2 * H
+    side = max(700.0, 1.6 * max(bw, bh))
+    cw, ch = min(W, side), min(H, side)
+    ax0 = int(np.clip(cx - cw / 2, 0, W - cw)); ay0 = int(np.clip(cy - ch / 2, 0, H - ch))
+    sl = (slice(ay0, int(ay0 + ch)), slice(ax0, int(ax0 + cw)))
+    b_path = imaging.save_rgb(before[sl], pdir / f"_qc_{tag}_before.jpg", quality=90)
+    a_path = imaging.save_rgb(after[sl], pdir / f"_qc_{tag}_after.jpg", quality=90)
+    try:
+        return await qc_check(instruction, str(b_path), str(a_path))
+    finally:
+        Path(b_path).unlink(missing_ok=True); Path(a_path).unlink(missing_ok=True)
+
+
 async def tv_screen(shoot: Shoot, photo: Photo, reference_index: int = 0, mode: str = "reference", brightness: float = 0.92,
                     box: list[float] | None = None, progress: Progress = None) -> dict:
     head = photo.head
@@ -159,12 +180,60 @@ async def tv_screen(shoot: Shoot, photo: Photo, reference_index: int = 0, mode: 
     pdir = store.photo_dir(photo)
     idx = len(photo.versions)
     out_path = imaging.save_rgb(final, pdir / f"v{idx:02d}_tv.jpg")
+    cost = 0.001
+    method = f"perspective fit via {how}"
+    verdict: dict | None = None
+    params: dict = {"mode": mode, "reference_index": reference_index, "quad": quad.round(1).tolist(), "fit": how}
+    # QC-gated generative fallback: a TV behind glass shelves, cut by the frame edge or inside a cabinet defeats the
+    # geometric fit. When the judge flags the fit (or it had to fall back to the detection box), ask the image model to
+    # put the reference on the screen and keep whichever result the judge scores higher.
+    if content is not None and settings.generative_fallback and settings.image_backend == "gemini":
+        qc_instr = ("Show the customer's reference image on the TV screen so that it fills the screen panel exactly, inside the "
+                    "bezel, with the screen's own perspective. It must not spill over the frame, stand, shelves or wall, must not be "
+                    "a flat rectangle pasted at the wrong angle, and must not cover only part of the screen. Everything that is not "
+                    "the screen must stay identical. This is a close-up of the TV area.")
+        verdict = await _qc_closeup(qc_instr, rgb, final, d["box"], pdir, "fit")
+        cost += verdict.get("cost_usd", 0)
+        weak = how == "detection box (inset)"
+        if verdict.get("verdict") == "needs_review" or weak:
+            from .generative import generative_edit   # local import: generative imports masks, which imports nothing of ours here
+            if progress:
+                await progress(f"{photo.name}: screen fit flagged by QC, trying a generative fit")
+            try:
+                g = await generative_edit(shoot, photo, "Display the customer's reference image (image 2) on the television screen so it fills the "
+                                          "screen exactly inside its bezel with the correct perspective, as if the TV were showing it. Keep the TV "
+                                          "frame, stand, reflections on the bezel and everything else in the room unchanged.",
+                                          references=[f"reference:{reference_index}"], protect="television screen", progress=progress, qc=False, save=False)
+            except Exception as e:  # noqa: BLE001 - the fallback must never break the deterministic result
+                g = {"changed": False, "message": str(e)[:200]}
+            if g.get("changed"):
+                g_path = imaging.save_rgb(g["final"], pdir / f"v{idx:02d}_cand_gen.jpg")
+                gv = await _qc_closeup(qc_instr, rgb, g["final"], d["box"], pdir, "gen")
+                cost += gv.get("cost_usd", 0) + float(g.get("cost_usd", 0))
+                params["fallback"] = {"tried": True, "fit_qc": {k: verdict.get(k) for k in ("verdict", "fulfilled", "collateral", "artifacts")},
+                                      "generative_qc": {k: gv.get(k) for k in ("verdict", "fulfilled", "collateral", "artifacts")}}
+                if qc_score(gv) > qc_score(verdict):
+                    final, hard, verdict = g["final"], g["hard"], gv
+                    Path(out_path).unlink(missing_ok=True); Path(g_path).rename(out_path)
+                    method = f"generative fit (Nano Banana), chosen by QC over the {how} fit"
+                    params["fallback"]["chosen"] = "generative"
+                else:
+                    Path(g_path).unlink(missing_ok=True)
+                    params["fallback"]["chosen"] = "perspective fit"
+            else:
+                params["fallback"] = {"tried": True, "generative_changed": False}
     mask_path = imaging.save_mask(hard, pdir / f"v{idx:02d}_mask.png")
     imaging.save_rgb(composite.overlay_preview(rgb, hard, color=(0.2, 0.6, 1.0)), pdir / f"v{idx:02d}_maskpreview.jpg")
     area = composite.mask_area_fraction(hard)
     label = "Blacked out the TV screen" if content is None else f"Put customer reference {reference_index + 1} on the TV screen"
-    v = store.add_version(shoot, photo, out_path, "tv_screen", {"mode": mode, "reference_index": reference_index, "quad": quad.round(1).tolist(), "fit": how},
-                          f"{label} (perspective fit via {how}, {area*100:.1f}% of frame)", mask_path=mask_path, cost_usd=0.001)
-    return {"found": True, "photo_id": photo.id, "version_id": v.id, "version_index": v.index, "fit": how,
-            "area_pct": round(area * 100, 2), "result_url": store.rel_url(out_path),
-            "mask_preview_url": store.rel_url(pdir / f"v{idx:02d}_maskpreview.jpg"), "cost_usd": 0.001}
+    if verdict is not None:
+        params["qc"] = verdict
+    v = store.add_version(shoot, photo, out_path, "tv_screen", params, f"{label} ({method}, {area*100:.1f}% of frame)", mask_path=mask_path, cost_usd=cost)
+    out = {"found": True, "photo_id": photo.id, "version_id": v.id, "version_index": v.index, "fit": how, "method": method,
+           "area_pct": round(area * 100, 2), "result_url": store.rel_url(out_path),
+           "mask_preview_url": store.rel_url(pdir / f"v{idx:02d}_maskpreview.jpg"), "cost_usd": round(cost, 3)}
+    if verdict is not None:
+        out["qc"] = {k: verdict.get(k) for k in ("verdict", "fulfilled", "collateral", "artifacts", "reason")}
+    if params.get("fallback"):
+        out["fallback"] = params["fallback"]
+    return out

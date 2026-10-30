@@ -52,3 +52,9 @@ async def qc_check(instruction: str, before_path: str, after_path: str, long_sid
                 "artifacts": out.get("artifacts"), "reason": str(out.get("reason", ""))[:200], "cost_usd": EST_COST["qc"]}
     except (GeminiError, Exception) as e:  # noqa: BLE001
         return {"verdict": "skipped", "reason": f"QC unavailable: {str(e)[:80]}", "cost_usd": 0.0}
+
+
+def qc_score(q: dict | None) -> tuple:
+    """Orderable quality of a verdict: a pass beats any review, then fulfilled minus artifacts minus collateral."""
+    q = q or {}
+    return (q.get("verdict") == "pass", (q.get("fulfilled") or 0) - (q.get("artifacts") or 0) - (q.get("collateral") or 0))

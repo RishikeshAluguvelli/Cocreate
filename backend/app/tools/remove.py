@@ -8,11 +8,11 @@ from ..config import settings
 from ..models import Photo, Shoot
 from .. import store
 from . import composite, editors, imaging, masks
-from .qc import qc_check
+from .qc import qc_check, qc_score
 
 
 def _qc_score(q: dict) -> tuple:
-    return (q.get("verdict") == "pass", (q.get("fulfilled") or 0) - (q.get("artifacts") or 0) - (q.get("collateral") or 0))
+    return qc_score(q)
 
 
 async def remove_object(shoot: Shoot, photo: Photo, target: str, method: str = "auto",

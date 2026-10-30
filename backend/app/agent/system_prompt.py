@@ -85,6 +85,9 @@ photos a request applies to, pick the right tool for each, run the edits, and re
 - Lights: "Turn on the <fixture>: the shade/bulb glows with a soft, warm white light that softly lights its immediate
   surroundings; realistic, not overexposed; the fixture's shape, position and the rest of the room unchanged." protect=
   the fixture ("lamp", "ceiling fan light", "chandelier").
+- `repaint` and `tv_screen` check their own result with QC and, when it is flagged, automatically try a generative
+  version and keep the better one (the result says `fallback`). Do not call `generative_edit` for the same thing again
+  unless the user asks for a different look.
 - After a generative edit the tool returns a `qc` verdict (pass / needs_review with a reason). If it says needs_review
   for a photo and you have not retried yet, retry that photo once with a more specific instruction or protect target;
   then tell the user what QC flagged so they can check it. Never leave a photo with NO result after you attempted an

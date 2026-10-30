@@ -63,6 +63,7 @@ class Settings(BaseSettings):
     large_mask_area: float = 0.18   # > this fraction -> two fill strategies run and the QC verdict picks the better
     mask_review: bool = True        # vision check of surface masks: carve out parts that are not the target
     edit_concurrency: int = 3       # model edits running at once per process; 1 on a 512 MB host (each 2K edit peaks ~300 MB)
+    generative_fallback: bool = True  # when a deterministic tool's result is flagged by QC, also try a Nano Banana version and keep the better
 
     @property
     def has_planner(self) -> bool:

@@ -16,7 +16,7 @@ from .. import store
 from ..config import settings
 from ..models import Photo, Shoot
 from ..tools import brightness, color, composite, extras, imaging, lot_lines, masks, watermark
-from ..tools.qc import qc_check
+from ..tools.qc import qc_check, qc_score
 from ..tools.generative import generative_edit
 from ..tools.remove import remove_object
 from ..tools.tv_screen import tv_screen
@@ -196,18 +196,46 @@ async def repaint(shoot: Shoot, emit: Emit, photo_ids, target: str, hex: str, lu
             pdir = store.photo_dir(photo)
             idx = len(photo.versions)
             out_path = imaging.save_rgb(out, pdir / f"v{idx:02d}_repaint.jpg")
-            mask_path = imaging.save_mask(em.raw, pdir / f"v{idx:02d}_mask.png")
-            imaging.save_rgb(composite.overlay_preview(rgb, em.raw), pdir / f"v{idx:02d}_maskpreview.jpg")
-            v = store.add_version(shoot, photo, out_path, "repaint", {"target": target, "hex": hex, "strength": strength, "luminance_follow": luminance_follow},
-                                  f"Repainted {target} to {hex.upper()}{'' if (strength or 1) >= 1 else f' at {int(strength*100)}%'} ({em.area*100:.1f}% of frame)", mask_path=mask_path, cost_usd=0.01)
+            mask_for_version, method, cost = em.raw, "LAB recolour", 0.01
+            params: dict = {"target": target, "hex": hex, "strength": strength, "luminance_follow": luminance_follow}
             # same vision QC as the generative tools: catches a mask that bled onto artwork, windows or furniture
             await emit("progress", {"photo_id": photo.id, "message": f"QC check on {photo.name}"})
-            verdict = await qc_check(f"Repaint only the {target} to {hex}, keeping its texture and shading; everything that is not {target} "
-                                     f"(windows, artwork, furniture, floor, ceiling) must stay identical.", head.path, str(out_path))
-            v.params["qc"] = verdict
-            v.cost_usd += verdict.get("cost_usd", 0); shoot.total_cost_usd += verdict.get("cost_usd", 0)
-            store.save(shoot)
-            r = _version_payload(photo); r["found"] = True; r["area_pct"] = round(em.area * 100, 1)
+            qc_instr = (f"Repaint only the {target} to {hex}, keeping its texture and shading; everything that is not {target} "
+                        f"(windows, artwork, furniture, floor, ceiling) must stay identical.")
+            verdict = await qc_check(qc_instr, head.path, str(out_path))
+            cost += verdict.get("cost_usd", 0)
+            # QC-gated fallback: when the recolour is flagged (mask bled, or missed most of the surface), try a generative repaint
+            # confined to the detected surface and keep whichever the judge scores higher
+            if verdict.get("verdict") == "needs_review" and settings.generative_fallback and settings.image_backend == "gemini" and (strength or 1) >= 0.9:
+                await emit("progress", {"photo_id": photo.id, "message": f"{photo.name}: repaint flagged by QC, trying a generative repaint"})
+                try:
+                    g = await generative_edit(shoot, photo, f"Repaint the {target} to exactly the colour {hex.upper()}, evenly, keeping its texture, "
+                                              f"shading, trim and edges; everything that is not the {target} stays identical.",
+                                              protect=target, qc=False, save=False, user_mask=um)
+                except Exception as e:  # noqa: BLE001
+                    g = {"changed": False, "message": str(e)[:200]}
+                if g.get("changed"):
+                    g_path = imaging.save_rgb(g["final"], pdir / f"v{idx:02d}_cand_gen.jpg")
+                    gv = await qc_check(qc_instr, head.path, str(g_path))
+                    cost += gv.get("cost_usd", 0) + float(g.get("cost_usd", 0))
+                    params["fallback"] = {"tried": True, "recolour_qc": {k: verdict.get(k) for k in ("verdict", "fulfilled", "collateral", "artifacts")},
+                                          "generative_qc": {k: gv.get(k) for k in ("verdict", "fulfilled", "collateral", "artifacts")}}
+                    if qc_score(gv) > qc_score(verdict):
+                        verdict, mask_for_version, method = gv, g["hard"], "generative repaint (Nano Banana), chosen by QC over the recolour"
+                        Path(out_path).unlink(missing_ok=True); Path(g_path).rename(out_path)
+                        params["fallback"]["chosen"] = "generative"
+                    else:
+                        Path(g_path).unlink(missing_ok=True)
+                        params["fallback"]["chosen"] = "recolour"
+            mask_path = imaging.save_mask(mask_for_version, pdir / f"v{idx:02d}_mask.png")
+            imaging.save_rgb(composite.overlay_preview(rgb, mask_for_version), pdir / f"v{idx:02d}_maskpreview.jpg")
+            params["qc"] = verdict
+            v = store.add_version(shoot, photo, out_path, "repaint", params,
+                                  f"Repainted {target} to {hex.upper()}{'' if (strength or 1) >= 1 else f' at {int(strength*100)}%'} via {method} ({em.area*100:.1f}% of frame)",
+                                  mask_path=mask_path, cost_usd=cost)
+            r = _version_payload(photo); r["found"] = True; r["area_pct"] = round(em.area * 100, 1); r["method"] = method
+            if params.get("fallback"):
+                r["fallback"] = params["fallback"]
             if em.area > 0.45:
                 r["warning"] = (f"the {target} mask covers {em.area*100:.0f}% of the frame; check the Mask view. If too much was repainted, "
                                 f"retry with a more specific target (e.g. 'back wall') or a box, or ask the user to click points on it.")

@@ -36,7 +36,9 @@ def _resolve_refs(photo: Photo, refs: list[str] | None) -> list[str]:
 
 async def generative_edit(shoot: Shoot, photo: Photo, instruction: str, references: list[str] | None = None,
                           protect: str = "auto", protect_dilate_pct: float = 0.02, resolution: str | None = None,
-                          progress=None, qc: bool = True, user_mask=None) -> dict:
+                          progress=None, qc: bool = True, user_mask=None, save: bool = True) -> dict:
+    """save=False: compute the composited result and return it as arrays ("final", "hard", "note", "cost_usd", "changed")
+    without creating a version; used by deterministic tools that try a generative version as a QC-gated fallback."""
     head = photo.head
     rgb = imaging.load_rgb(head.path)
     H, W = rgb.shape[:2]
@@ -121,6 +123,9 @@ async def generative_edit(shoot: Shoot, photo: Photo, instruction: str, referenc
         final = await asyncio.to_thread(composite.composite, rgb, edited, soft)
 
     area = composite.mask_area_fraction(hard)
+    if not save:
+        shoot.total_cost_usd += cost
+        return {"photo_id": photo.id, "changed": True, "final": final, "hard": hard, "note": note, "cost_usd": cost, "area_pct": round(area * 100, 2)}
     pdir = store.photo_dir(photo)
     idx = len(photo.versions)
     out_path = imaging.save_rgb(final, pdir / f"v{idx:02d}_edit.jpg")
