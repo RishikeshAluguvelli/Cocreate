@@ -169,7 +169,9 @@ async def fill(rgb: np.ndarray, hard_mask: np.ndarray, target: str, method: str,
     "semantic" (model removes the object from the untouched photo; used for large areas, compared by QC)."""
     backend = settings.image_backend
     small = area <= settings.small_mask_area
-    if method == "erase" or (method == "auto" and backend != "fal" and area <= 0.006):
+    # classical inpainting smears anything bigger than a cord or a small sign: honour an explicit "erase" only for small
+    # masks and send larger ones through the pre-erase + model repair path, which is what the user actually wants
+    if (method == "erase" and area <= 0.008) or (method == "auto" and backend != "fal" and area <= 0.006):
         return telea(rgb, hard_mask), "erase (inpaint)", 0.0, True
     if backend == "fal":
         if method == "auto" and small:

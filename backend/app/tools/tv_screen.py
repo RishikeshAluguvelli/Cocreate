@@ -49,23 +49,45 @@ def find_screen_quad(rgb: np.ndarray, box: list[float]) -> tuple[np.ndarray, str
             continue
         if best is None or a > cv2.contourArea(best):
             best = c
+    quad = None
     if best is not None:
         peri = cv2.arcLength(best, True)
         approx = cv2.approxPolyDP(best, 0.02 * peri, True)
+        quad, how = None, ""
         if len(approx) == 4:
             quad = _order_quad(approx.reshape(4, 2).astype(np.float32))
             how = "dark-panel contour"
         else:
             rect = cv2.minAreaRect(best)
-            quad = _order_quad(cv2.boxPoints(rect).astype(np.float32))
-            how = "dark-panel min-rect"
-        # sanity: must be convex, fill most of its own bbox and not be degenerate
+            (rw, rh), ang = rect[1], rect[2]
+            # a screen panel photographed in a room is close to axis-aligned; a strongly tilted minimum rectangle means
+            # the dark contour is not the panel (a reflection, a stand, a cabinet) and must not be used as the screen
+            tilt = min(abs(ang) % 90, 90 - abs(ang) % 90)
+            if tilt <= 8.0 and min(rw, rh) > 0:
+                quad = _order_quad(cv2.boxPoints(rect).astype(np.float32))
+                how = "dark-panel min-rect"
+    if best is not None and quad is not None:
+        # sanity: convex, fills most of its own bbox, is a decent part of the TV box, and has roughly the TV's aspect
+        # (a dark vertical cabinet or a reflection inside the box must not become a portrait "screen")
         qx0, qy0 = quad.min(axis=0); qx1, qy1 = quad.max(axis=0)
         bb = max(1.0, (qx1 - qx0) * (qy1 - qy0))
-        if cv2.isContourConvex(quad.astype(np.int32).reshape(-1, 1, 2)) and cv2.contourArea(quad) / bb > 0.7:
+        q_aspect = max(1.0, qx1 - qx0) / max(1.0, qy1 - qy0)
+        b_aspect = max(1.0, (x1 - x0) * W) / max(1.0, (y1 - y0) * H)
+        plausible = (0.6 < q_aspect / b_aspect < 1.7) and cv2.contourArea(quad) >= 0.35 * box_area and not (b_aspect > 1.2 and q_aspect < 1.0)
+        if plausible and cv2.isContourConvex(quad.astype(np.int32).reshape(-1, 1, 2)) and cv2.contourArea(quad) / bb > 0.7:
             quad[:, 0] += bx0; quad[:, 1] += by0
             return quad, how
-    # fallback: the detection box inset by 4% (bezel)
+    # fallback 1: the largest dark region's bounding box, when it is a plausible landscape panel. A TV behind glass
+    # shelves or inside a cabinet gives a detection box far bigger than the screen; the whole box would overflow it.
+    if best is not None:
+        rx, ry, rw, rh = cv2.boundingRect(best)
+        r_aspect = max(1.0, rw) / max(1.0, rh)
+        b_aspect = max(1.0, (x1 - x0) * W) / max(1.0, (y1 - y0) * H)
+        if rw * rh >= 0.15 * box_area and r_aspect >= 1.1 and 0.5 < r_aspect / b_aspect < 2.5:
+            quad = np.array([[rx, ry], [rx + rw, ry], [rx + rw, ry + rh], [rx, ry + rh]], np.float32)
+            quad[:, 0] += bx0; quad[:, 1] += by0
+            return quad, "dark-panel bounding box"
+    # fallback 2: the detection box inset by 4% (bezel)
     ix, iy = 0.04 * (x1 - x0) * W, 0.04 * (y1 - y0) * H
     quad = np.array([[x0 * W + ix, y0 * H + iy], [x1 * W - ix, y0 * H + iy], [x1 * W - ix, y1 * H - iy], [x0 * W + ix, y1 * H - iy]], np.float32)
     return quad, "detection box (inset)"

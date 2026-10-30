@@ -160,14 +160,16 @@ async def _gemini_mask(rgb: np.ndarray, target: str | None, points: list[list[fl
             hit = [d["box"] for d in dets if any(d["box"][0] <= px <= d["box"][2] and d["box"][1] <= py <= d["box"][3] for px, py in points)]
             if hit:
                 boxes = hit
-    elif target:
+    tiled = False
+    if not points and target:
         dets = await gemini_provider.detect(rgb, target, restrict_box=box, max_objects=40)
         if not box and _needs_tiling(dets, W, H):
             dets = dets + await detect_tiled(rgb, target)
+            tiled = True
         boxes = _merge_boxes([d["box"] for d in dets])
         if box:
             boxes = [b for b in boxes if b[2] > box[0] and b[0] < box[2] and b[3] > box[1] and b[1] < box[3]]
-    elif box:
+    elif not points and box:
         boxes = [box]
     surface = is_surface(target)
     refine = surface_refine if surface else grabcut_refine
@@ -178,6 +180,30 @@ async def _gemini_mask(rgb: np.ndarray, target: str | None, points: list[list[fl
             m = extend_shadow(m, b)
         inst.append(m)
     inst = [m for m in inst if m.sum() > 16]
+    if not surface and target and not points and (tiled or len(inst) >= 4) and len(inst) > 1 and settings.mask_review:
+        # many detections (or detections from tiles) are where false positives live: a window or a shed labelled as a bin.
+        # Show the vision model the overlay and drop the instances it says are not the target; never drop them all.
+        try:
+            wrong = await review_object_mask(rgb, np.clip(np.sum(inst, axis=0), 0, 1), target)
+        except Exception as e:  # best effort
+            print(f"[mask review] object review failed for {target!r}: {type(e).__name__}: {str(e)[:120]}")
+            wrong = []
+        if wrong:
+            keep_inst = []
+            for m, b in zip(inst, boxes if len(boxes) == len(inst) else [None] * len(inst)):
+                ys, xs = np.where(m > 0.5)
+                mb = [xs.min() / W, ys.min() / H, (xs.max() + 1) / W, (ys.max() + 1) / H] if len(xs) else (b or [0, 0, 0, 0])
+                covered = 0.0
+                for wb in wrong:
+                    ix0, iy0, ix1, iy1 = max(mb[0], wb[0]), max(mb[1], wb[1]), min(mb[2], wb[2]), min(mb[3], wb[3])
+                    inter = max(0.0, ix1 - ix0) * max(0.0, iy1 - iy0)
+                    covered = max(covered, inter / max(1e-6, (mb[2] - mb[0]) * (mb[3] - mb[1])))
+                if covered < 0.5:
+                    keep_inst.append(m)
+            dropped = len(inst) - len(keep_inst)
+            print(f"[mask review] {target!r}: {len(wrong)} wrongly covered part(s), dropping {dropped} of {len(inst)} instance(s)")
+            if keep_inst and dropped:
+                inst = keep_inst
     if surface and inst and target and (excl := exclusion_prompt(target)):
         carve = np.zeros((H, W), np.float32)
         try:
@@ -319,6 +345,30 @@ async def review_surface_mask(rgb: np.ndarray, mask: np.ndarray, target: str) ->
               f"door, roof, trees). Return a JSON list where each item has \"box_2d\": [ymin, xmin, ymax, xmax] normalized to "
               f"0-1000 around that wrongly covered part only, and \"label\": what it is. Ignore slight overlaps at edges. "
               f"Return [] if the overlay covers only the {target}.")
+    d = await gemini_provider.generate(settings.gemini_vision_model,
+                                       [{"role": "user", "parts": [image_part(overlay, 1024, 86), {"text": prompt}]}],
+                                       generation_config={"responseMimeType": "application/json", "maxOutputTokens": 2000,
+                                                          "thinkingConfig": {"thinkingLevel": "minimal"}})
+    txt = "".join(p.get("text", "") for p in d["candidates"][0]["content"]["parts"])
+    out = []
+    for o in _parse_json_list(txt):
+        b = o.get("box_2d") if isinstance(o, dict) else None
+        if not b or len(b) != 4:
+            continue
+        y0, x0, y1, x1 = [max(0.0, min(1.0, float(v) / 1000.0)) for v in b]
+        if x1 - x0 > 0.004 and y1 - y0 > 0.004:
+            out.append([x0, y0, x1, y1])
+    return out
+
+
+async def review_object_mask(rgb: np.ndarray, mask: np.ndarray, target: str) -> list[list[float]]:
+    """Object counterpart of review_surface_mask: which red regions are NOT the target (a window, a shed, a car part
+    that detection labelled as the target)? Returns boxes of those regions."""
+    overlay = composite.overlay_preview(rgb, mask)
+    prompt = (f"The red overlay on this photo marks what an object detector believes to be: {target}. Look at every red region and "
+              f"list the ones that are clearly NOT {target} (for example a window, a door, a shed, a car, a plant, a piece of the "
+              f"building). Return a JSON list where each item has \"box_2d\": [ymin, xmin, ymax, xmax] normalized to 0-1000 around "
+              f"that wrongly marked region only, and \"label\": what it actually is. Return [] if every red region is {target}.")
     d = await gemini_provider.generate(settings.gemini_vision_model,
                                        [{"role": "user", "parts": [image_part(overlay, 1024, 86), {"text": prompt}]}],
                                        generation_config={"responseMimeType": "application/json", "maxOutputTokens": 2000,
@@ -629,9 +679,27 @@ def surface_refine(rgb: np.ndarray, box: list[float], chroma_tol: float = 9.0, l
     (sockets, soft shadows) are filled; artwork and window views stay out."""
     H, W = rgb.shape[:2]
     lab = cv2.cvtColor(np.clip(rgb, 0, 1).astype(np.float32), cv2.COLOR_RGB2LAB)
-    L = lab[..., 0]
     x0, y0, x1, y1 = box
     bx0, by0, bx1, by1 = int(x0 * W), int(y0 * H), int(x1 * W), int(y1 * H)
+    # texture: grass, gravel and foliage are edges everywhere at pixel scale, which fragments the growth into pieces
+    # the dominant-component rule then drops (a patchy lawn ends at its first sod seam). Measure the lightness gradient
+    # in the centre of the box; on a textured surface work on a blurred image with coarser edge thresholds and a wider band.
+    cx0_, cy0_ = bx0 + (bx1 - bx0) // 4, by0 + (by1 - by0) // 4
+    cx1_, cy1_ = max(bx1 - (bx1 - bx0) // 4, cx0_ + 2), max(by1 - (by1 - by0) // 4, cy0_ + 2)
+    g0 = cv2.GaussianBlur(lab[..., 0], (0, 0), 1.2)
+    g0 = np.hypot(cv2.Sobel(g0, cv2.CV_32F, 1, 0, ksize=3), cv2.Sobel(g0, cv2.CV_32F, 0, 1, ksize=3))
+    tex = float(np.median(g0[cy0_:cy1_, cx0_:cx1_])) if cy1_ > cy0_ and cx1_ > cx0_ else 0.0
+    if tex > 9.0:
+        med0 = np.median(lab[cy0_:cy1_, cx0_:cx1_].reshape(-1, 3), axis=0)
+        neutral = float(np.hypot(med0[1], med0[2])) < 8.0
+        sigma = max(1.5, 0.004 * max(W, H)) * min(2.0, tex / 9.0)
+        lab = cv2.GaussianBlur(lab, (0, 0), sigma)
+        canny, g_grow, g_seed = (30, 75), 40.0, g_seed * 1.6
+        step_min, step_chroma = step_min + 4, step_chroma + 3
+        if not neutral:
+            chroma_tol *= 1.5
+        light_tol, grow_light_tol = light_tol * 1.3, grow_light_tol * 1.3
+    L = lab[..., 0]
     edge, grad = _step_edges(lab, canny=canny, g_grow=g_grow, min_edge_px_frac=min_edge_px_frac, step_min=step_min, step_chroma=step_chroma)
     # ---- reference colour: median of the smooth (non-edge) pixels in the central half of the box
     cx0, cy0 = bx0 + (bx1 - bx0) // 4, by0 + (by1 - by0) // 4

@@ -32,11 +32,11 @@ browser (React + Vite)                      FastAPI (uvicorn, asyncio)          
 
 | Tool | Pipeline |
 |---|---|
-| `remove_object` | detection boxes (tiled 2×2 on aerials) → GrabCut per box + contact-shadow extension → classical pre-erase (Telea) → Nano Banana repairs each close-up window with the mask as a second image → composite through a feathered mask → QC. Masks over 18 % of the frame also run a semantic full-frame removal; QC keeps the better. |
-| `repaint` | surface detection → colour-region growth bounded by step edges (directional line-vs-step test) → detected windows / curtains / furniture / artwork carved out → vision review of the overlay carves what it names → LAB chroma swap keeping texture and shading → QC. |
+| `remove_object` | detection boxes (tiled 2×2 on aerials) → when tiles were used or four or more instances were found, a vision review of the overlay drops instances that are not the target (a window or shed labelled as a bin) → GrabCut per box + contact-shadow extension → classical pre-erase (Telea) → Nano Banana repairs each close-up window with the mask as a second image → composite through a feathered mask → QC. Masks over 18 % of the frame also run a semantic full-frame removal; QC keeps the better. An explicit `erase` uses classical inpainting only below 0.8 % of the frame; larger ones take the repair path. |
+| `repaint` | surface detection → colour-region growth bounded by step edges (directional line-vs-step test; on textured surfaces such as lawn or gravel the growth runs on a blurred copy with coarser edge thresholds so sod seams do not fragment it) → detected windows / curtains / furniture / artwork carved out → vision review of the overlay carves what it names → LAB chroma swap keeping texture and shading → QC. |
 | `generative_edit` | protect mask (object detection or painted area) → close-up window around it → Nano Banana with the instruction and references → no-op detection and strong retry → composite inside the mask → QC. |
 | `adjust` | linear-light exposure, S-curve contrast, chroma scale, white-balance shift, shadow/highlight lift, unsharp; optional region mask. The browser runs the same maths for the live sliders. |
-| `tv_screen` | panel detection → screen quad (Otsu + polygon) → perspective-warp the reference, pixel exact. |
+| `tv_screen` | panel detection → screen quad (Otsu + polygon, accepted only when convex, landscape and of a plausible size for the TV box; otherwise the dark panel's bounding box, otherwise the inset box) → perspective-warp the reference, pixel exact. |
 | `sample_color` | median LAB inside the detected surface, exposure-matched between brackets and the finished photo; distinct candidates per instance. |
 | `draw_lot_lines`, `add_watermark`, `blur`, `match_look`, `crop_rotate` | deterministic OpenCV / PIL. |
 | Colour tool (`/color-at`, `/region-at`, `/apply-color`, no planner) | `masks.region_at_point`: colour growth from the clicked pixel bounded by the same step-edge barrier as `surface_refine`, lightness compared to a least-squares shading plane fitted on what was found (follows window light and vignetting), finer edge test and narrower band for near-neutral surfaces, blurred working image for textured ones (lawn, gravel); `object` mode runs GrabCut with the grown pixels near the click as foreground inside a window around the click, limited to a wide colour band; several clicks are unioned, and hand-drawn Add / Erase strokes from the editor (PNG layers) are unioned with or cut out of the region before recolouring. `pick.pick_color` samples the median of the grown region's mid-lit pixels (plus lit / shade variants); `color.recolor` keeps a fraction of the surface's own chroma variation, desaturates specular highlights and compresses bright deviations for light targets instead of clipping. |
@@ -60,7 +60,11 @@ powers `tests/eval_dataset.py` (200 real customer requests), `tests/smoke_new_ph
   sign-up keeps it), `required` (login wall).
 - Every shoot has an `owner_id`; every route and every `/files/...` URL checks it. Other people's shoots answer 404.
 - Per-shoot `asyncio.Lock` serialises requests on one shoot; different shoots run concurrently; CPU-bound steps run in
-  `asyncio.to_thread`; the edit semaphore caps concurrent model edits per process.
+  `asyncio.to_thread`; the edit semaphore (`EDIT_CONCURRENCY`) caps concurrent model edits per process.
+- Per-photo locks inside one turn: the planner runs independent tool calls in parallel, and two calls that edit the
+  same photo (reference on the TV, lamps on) would otherwise both start from the current version and the second one
+  saved would discard the first one's pixels. Every editing call holds a lock on each photo it touches, taken in a fixed
+  order; calls on disjoint photos still run side by side (`tests/test_photo_lock.py`).
 
 ## Storage
 

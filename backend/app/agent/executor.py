@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import contextvars
 import io
 from pathlib import Path
@@ -474,9 +475,48 @@ async def revert_to(shoot: Shoot, emit: Emit, photo_id: str, version_index: int)
     return r
 
 
+_photo_locks: dict[str, asyncio.Lock] = {}
+READ_ONLY_TOOLS = {"inspect_photo", "sample_color"}
+
+
+def _photo_lock(photo_id: str) -> asyncio.Lock:
+    lock = _photo_locks.get(photo_id)
+    if lock is None:
+        lock = _photo_locks[photo_id] = asyncio.Lock()
+    return lock
+
+
+@contextlib.asynccontextmanager
+async def _hold_photos(shoot: Shoot, inp: dict[str, Any]):
+    """The planner runs independent tool calls in parallel. Two calls that edit the SAME photo (put the reference on the
+    TV, turn on the lamps) would both start from the current version and the second one saved would silently throw the
+    first one's pixels away. Each editing call therefore holds a lock on every photo it touches, taken in a fixed order so
+    two calls can never deadlock; calls on disjoint photos still run side by side."""
+    ids = inp.get("photo_ids")
+    if ids is None and inp.get("photo_id"):
+        ids = [inp["photo_id"]]
+    photos = sorted(_photos(shoot, ids), key=lambda p: p.id) if ids else []
+    held = []
+    try:
+        for ph in photos:
+            await _photo_lock(ph.id).acquire()
+            held.append(ph.id)
+        yield
+    finally:
+        for pid in held:
+            _photo_lock(pid).release()
+
+
 async def dispatch(shoot: Shoot, emit: Emit, name: str, inp: dict[str, Any]) -> tuple[dict, dict | None]:
     """Returns (json_result, optional_image_block)."""
     inp = dict(inp or {})
+    if name in READ_ONLY_TOOLS:
+        return await _dispatch(shoot, emit, name, inp)
+    async with _hold_photos(shoot, inp):
+        return await _dispatch(shoot, emit, name, inp)
+
+
+async def _dispatch(shoot: Shoot, emit: Emit, name: str, inp: dict[str, Any]) -> tuple[dict, dict | None]:
     if name == "inspect_photo":
         return await inspect_photo(shoot, emit, **inp)
     if name == "sample_color":

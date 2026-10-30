@@ -17,8 +17,8 @@ the request stays byte-for-byte intact, and the UI proves it.
   revert any version, regenerate a flagged edit.
 - **Built to be used tomorrow.** Private guest workspaces with no sign-up, accounts that keep the work, per-shoot request
   isolation, downloads, and a self-contained HTML report for the customer.
-- **Measured.** 70.5 % strict-judge pass on AutoHDR's 200 real customer requests (up from 42 % at the first version), a
-  per-tool coverage suite, and automated isolation and concurrency checks.
+- **Measured.** 74 % strict-judge pass on AutoHDR's 200 real customer requests (up from 42 % at the first version), a
+  per-tool coverage suite, and automated isolation, concurrency and same-photo race checks.
 
 | | |
 |---|---|
@@ -43,7 +43,7 @@ chat ──► planner (Gemini 3.8 Flash, function calling, streams status + int
 
 | Request | Tool | How |
 |---|---|---|
-| remove X (AutoRemove) | `remove_object` | Gemini detection boxes (tiled on aerials for small objects) → GrabCut mask + contact-shadow extension → classical pre-erase → Nano Banana repairs each close-up window → composite |
+| remove X (AutoRemove) | `remove_object` | Gemini detection boxes (tiled on aerials for small objects; a vision review drops false positives when many are found) → GrabCut mask + contact-shadow extension → classical pre-erase → Nano Banana repairs each close-up window → composite |
 | repaint wall / floor to hex or reference (Re-Paint) | `sample_color` + `repaint` | edge-aware colour-region mask (crosses cables and grout, stops at cabinets and roofs), detected windows / artwork / furniture carved out, LAB chroma swap keeping texture and shading, QC verdict; bracket samples are exposure-matched |
 | brightness / contrast / warmth / shadows / sharpen | `adjust` | slider maths, optional region; the UI previews the same maths live in the browser |
 | reference on the TV / blackout | `tv_screen` | detect panel → screen quad → perspective-warp the reference (pixel-exact, free) |
@@ -136,6 +136,11 @@ LaMa / FLUX Fill. `COCREATE_MOCK=1` runs fully offline.
 `backend/tests/eval_dataset.py` turns every record into a single-photo shoot (finished photo + brackets + references),
 sends the request verbatim through the production planner, and scores the result with a strict vision judge that sees
 before, after and a changed-pixel map. Results: `data/eval/<run>/summary.md`.
+
+Latest full run (2026-10-30, after the same-photo lock, the object-mask review and the textured-surface masks): **148 / 200
+pass (74 %)**, 19 partial, 33 fail; mean 68 s per request at about $0.10. The earlier baseline was 141 pass (70.5 %) at
+396 s per request. Strongest categories: removal 43 / 49, TV reference 13 / 19, add-object 9 / 10, declutter 10 / 13.
+Weakest: lawn regeneration 10 / 23 and water or sky colour nudges, where the image model is conservative and the judge strict.
 
 ```bash
 cd backend && uv run python tests/eval_dataset.py --run v3 --concurrency 3 --judge
